@@ -21,83 +21,125 @@ const initDB = () => {
 };
 
 const saveMediaToDB = async (file) => {
-  const db = await initDB();
-  const id = `media_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  const item = { id, file, type: file.type, date: Date.now() };
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction([STORE_NAME], 'readwrite');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.add(item);
-    request.onsuccess = () => resolve(id);
-    request.onerror = () => reject(request.error);
-  });
+  try {
+    const db = await initDB();
+    const id = `media_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const item = { id, file, type: file.type, date: Date.now() };
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.add(item);
+      request.onsuccess = () => resolve(id);
+      request.onerror = (e) => reject(e.target.error);
+    });
+  } catch (err) {
+    console.error("Error saving media:", err);
+    throw err;
+  }
 };
 
 const getMediaFromDB = async (id) => {
-  const db = await initDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction([STORE_NAME], 'readonly');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.get(id);
-    request.onsuccess = () => resolve(request.result ? request.result.file : null);
-    request.onerror = () => resolve(null);
-  });
+  if (!id) return null;
+  try {
+    const db = await initDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readonly');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.get(id);
+      request.onsuccess = () => resolve(request.result ? request.result.file : null);
+      request.onerror = () => resolve(null);
+    });
+  } catch (err) {
+    console.error("Error retrieving media:", err);
+    return null;
+  }
 };
 
 const deleteMediaFromDB = async (id) => {
   if (!id) return;
-  const db = await initDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction([STORE_NAME], 'readwrite');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.delete(id);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
+  try {
+    const db = await initDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.delete(id);
+      request.onsuccess = () => resolve();
+      request.onerror = (e) => reject(e.target.error);
+    });
+  } catch (err) {
+    console.error("Error deleting media:", err);
+  }
 };
 
 // --- مكون عرض الوسائط (صورة أو فيديو) ---
 const MediaThumbnail = ({ mediaId, legacyImage, alt, className }) => {
   const [src, setSrc] = useState(legacyImage || null);
   const [type, setType] = useState(legacyImage ? 'image' : null);
-  const [loading, setLoading] = useState(!legacyImage);
+  const [loading, setLoading] = useState(!legacyImage && !!mediaId);
 
   useEffect(() => {
-    let objectUrl;
-    if (mediaId) {
-      setLoading(true);
-      getMediaFromDB(mediaId).then((file) => {
-        if (file) {
+    let isActive = true;
+    let objectUrl = null;
+
+    const loadMedia = async () => {
+      if (mediaId) {
+        setLoading(true);
+        const file = await getMediaFromDB(mediaId);
+        if (isActive && file) {
           objectUrl = URL.createObjectURL(file);
           setSrc(objectUrl);
           setType(file.type.startsWith('video') ? 'video' : 'image');
+          setLoading(false);
+        } else if (isActive) {
+          setLoading(false);
         }
+      }
+    };
+
+    if (mediaId && !src) {
+        loadMedia();
+    } else if (!mediaId && legacyImage) {
+        // Handle legacy base64 images
+        setSrc(legacyImage);
+        setType('image');
         setLoading(false);
-      });
     }
+
     return () => {
+      isActive = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [mediaId]);
+  }, [mediaId, legacyImage]);
 
-  if (loading) return <div className={`animate-pulse bg-zinc-800 ${className}`} />;
+  if (loading) return (
+      <div className={`animate-pulse bg-zinc-800 flex items-center justify-center ${className}`}>
+          <Activity className="w-6 h-6 text-zinc-600 animate-spin" />
+      </div>
+  );
 
   if (type === 'video') {
     return (
-      <div className={`relative ${className} bg-black flex items-center justify-center`}>
-        <video src={src} className="w-full h-full object-cover" muted playsInline autoPlay loop />
+      <div className={`relative ${className} bg-black flex items-center justify-center overflow-hidden`}>
+        <video 
+            src={src} 
+            className="w-full h-full object-cover pointer-events-none" 
+            muted 
+            playsInline 
+            autoPlay 
+            loop 
+        />
+        <div className="absolute inset-0 bg-black/10"></div>
       </div>
     );
   }
 
   if (src) {
-    return <img src={src} alt={alt} className={`${className} object-cover`} />;
+    return <img src={src} alt={alt} className={`${className} object-cover`} loading="lazy" />;
   }
 
   return (
     <div className={`${className} flex flex-col items-center justify-center bg-zinc-800/50 opacity-50`}>
-       <Activity className="w-8 h-8 mb-2" />
-       <span className="text-[10px]">لا توجد وسائط</span>
+       <Dumbbell className="w-8 h-8 mb-2 opacity-50" />
     </div>
   );
 };
@@ -138,6 +180,7 @@ export default function App() {
   const [previewUrl, setPreviewUrl] = useState(null);
   const [previewType, setPreviewType] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     const savedDays = localStorage.getItem('gym_days');
@@ -166,6 +209,7 @@ export default function App() {
       setPreviewType(null);
       setSelectedFile(null);
       setNewExerciseName('');
+      if (fileInputRef.current) fileInputRef.current.value = ''; // Reset input
     }
   }, [isAddingExercise]);
 
@@ -228,7 +272,7 @@ export default function App() {
       setIsAddingExercise(false);
     } catch (error) {
       console.error("Failed to save media:", error);
-      alert("حدث خطأ أثناء حفظ الملف. قد تكون المساحة ممتلئة.");
+      alert("حدث خطأ أثناء حفظ الملف. قد تكون المساحة ممتلئة أو الملف كبير جداً.");
     } finally {
       setIsSaving(false);
     }
@@ -250,7 +294,7 @@ export default function App() {
   return (
     <div className={`min-h-screen ${currentTheme.bg} text-zinc-100 font-sans pb-10 transition-colors duration-500`} dir="rtl">
       {/* Header */}
-      <header className={`${currentTheme.surface}/50 backdrop-blur-xl border-b ${currentTheme.border} p-4 sticky top-0 z-40`}>
+      <header className={`${currentTheme.surface}/80 backdrop-blur-xl border-b ${currentTheme.border} p-4 sticky top-0 z-40 shadow-sm`}>
         <div className="max-w-md mx-auto flex items-center justify-between">
           {selectedDay ? (
             <button onClick={() => setSelectedDay(null)} className="p-2 hover:bg-white/5 rounded-2xl transition-all active:scale-90">
@@ -272,9 +316,9 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-md mx-auto p-5">
+      <main className="max-w-md mx-auto p-5 pb-24">
         {!selectedDay ? (
-          <div className="space-y-4">
+          <div className="space-y-4 animate-in fade-in duration-300">
             <div className="flex items-center justify-between mb-6">
               <div>
                 <h2 className="text-white text-xl font-bold">جدولك الأسبوعي</h2>
@@ -303,7 +347,7 @@ export default function App() {
                 <div 
                   key={day.id}
                   onClick={() => setSelectedDay(day)}
-                  className={`relative overflow-hidden ${currentTheme.surface} border ${currentTheme.border} p-6 rounded-[2rem] flex items-center justify-between group cursor-pointer active:scale-[0.98] transition-all shadow-2xl shadow-black`}
+                  className={`relative overflow-hidden ${currentTheme.surface} border ${currentTheme.border} p-6 rounded-[2rem] flex items-center justify-between group cursor-pointer active:scale-[0.98] transition-all shadow-xl shadow-black/20`}
                 >
                   <div className="flex items-center gap-5">
                     <div className={`w-14 h-14 ${currentTheme.accentLight} rounded-[1.2rem] flex items-center justify-center ${currentTheme.accent} group-hover:${currentTheme.accentBg} group-hover:text-white transition-all duration-300`}>
@@ -341,13 +385,12 @@ export default function App() {
               </button>
             </div>
 
-            <div className="grid grid-cols-1 gap-5"> 
-              {/* تم إزالة زر الإضافة الكبير من هنا كما طلبت */}
+            <div className="flex flex-col gap-5">
               
               {filteredExercises.map((ex) => (
                 <div 
                   key={ex.id} 
-                  className={`${currentTheme.surface} rounded-[1.8rem] overflow-hidden border ${currentTheme.border} relative group shadow-2xl cursor-pointer`}
+                  className={`${currentTheme.surface} rounded-[1.8rem] overflow-hidden border ${currentTheme.border} relative group shadow-2xl cursor-pointer hover:border-white/10 transition-colors`}
                   onClick={() => {
                     if (ex.mediaType === 'video' || ex.mediaId || ex.image) {
                         setViewMedia(ex);
@@ -357,12 +400,12 @@ export default function App() {
                   <div className="aspect-video bg-zinc-800/20 flex items-center justify-center overflow-hidden relative">
                     <MediaThumbnail mediaId={ex.mediaId} legacyImage={ex.image} alt={ex.name} className="w-full h-full" />
                   </div>
-                  <div className={`p-4 ${currentTheme.surface}/80 backdrop-blur-sm border-t ${currentTheme.border}`}>
-                    <h4 className="font-bold text-sm text-white truncate">{ex.name}</h4>
+                  <div className={`p-4 ${currentTheme.surface}/90 backdrop-blur-sm border-t ${currentTheme.border}`}>
+                    <h4 className="font-bold text-lg text-white truncate text-center">{ex.name}</h4>
                   </div>
                   <button 
                     onClick={(e) => { e.stopPropagation(); setDeleteConfirm({ isOpen: true, type: 'exercise', id: ex.id, title: ex.name }); }}
-                    className="absolute top-3 left-3 p-2 bg-black/40 backdrop-blur-xl rounded-xl text-white opacity-0 group-hover:opacity-100 transition-all border border-white/10 active:scale-125 z-10"
+                    className="absolute top-3 left-3 p-2 bg-black/40 backdrop-blur-xl rounded-xl text-white opacity-0 group-hover:opacity-100 transition-all border border-white/10 active:scale-125 z-10 hover:bg-red-500/80"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -370,12 +413,12 @@ export default function App() {
               ))}
 
               {filteredExercises.length === 0 && (
-                  <div className="py-20 text-center text-zinc-500 flex flex-col items-center">
-                      <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center mb-4">
-                        <Dumbbell className="w-8 h-8 opacity-50" />
+                  <div className="py-20 text-center text-zinc-500 flex flex-col items-center animate-in zoom-in duration-300">
+                      <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center mb-6">
+                        <Dumbbell className="w-10 h-10 opacity-40" />
                       </div>
-                      <p className="text-sm">لا توجد تمارين مضافة بعد</p>
-                      <p className="text-xs opacity-50 mt-1">اضغط على "تمرين جديد" في الأعلى لإضافة تمرين</p>
+                      <p className="text-lg font-bold text-zinc-400">لا توجد تمارين بعد</p>
+                      <p className="text-xs opacity-50 mt-2 max-w-[200px] leading-relaxed">اضغط على زر "تمرين جديد" في الأعلى لإضافة أول تمرين</p>
                   </div>
               )}
             </div>
@@ -388,27 +431,15 @@ export default function App() {
         <div className="fixed inset-0 bg-black/95 z-[70] flex flex-col justify-center items-center p-4 animate-in fade-in duration-200">
            <button 
             onClick={() => setViewMedia(null)} 
-            className="absolute top-6 left-6 p-3 bg-white/10 rounded-full text-white hover:bg-white/20 z-50"
+            className="absolute top-6 left-6 p-3 bg-white/10 rounded-full text-white hover:bg-white/20 z-50 backdrop-blur-md"
            >
             <X className="w-6 h-6" />
            </button>
            
-           <h2 className="absolute top-8 text-xl font-bold text-white z-40 drop-shadow-md">{viewMedia.name}</h2>
+           <h2 className="absolute top-8 text-xl font-bold text-white z-40 drop-shadow-md px-4 py-2 bg-black/50 rounded-xl backdrop-blur-sm">{viewMedia.name}</h2>
            
-           <div className="w-full max-w-4xl aspect-video rounded-3xl overflow-hidden shadow-2xl bg-black border border-white/10 relative">
-             {viewMedia.mediaType === 'video' ? (
-                 <MediaThumbnail mediaId={viewMedia.mediaId} legacyImage={viewMedia.image} className="w-full h-full" />
-             ) : (
-                <MediaThumbnail mediaId={viewMedia.mediaId} legacyImage={viewMedia.image} className="w-full h-full object-contain" />
-             )}
-             
-             {viewMedia.mediaType === 'video' && (
-                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                    <MediaThumbnail mediaId={viewMedia.mediaId} legacyImage={viewMedia.image} className="w-full h-full" />
-                </div>
-             )}
-              
-              <div className="absolute inset-0 bg-black">
+           <div className="w-full max-w-5xl aspect-video rounded-3xl overflow-hidden shadow-2xl bg-black border border-white/10 relative">
+              <div className="absolute inset-0 flex items-center justify-center bg-black">
                  <MediaViewerFull mediaId={viewMedia.mediaId} legacyImage={viewMedia.image} />
               </div>
            </div>
@@ -426,7 +457,7 @@ export default function App() {
               </button>
             </div>
             
-            <div className="grid gap-4">
+            <div className="grid gap-4 max-h-[50vh] overflow-y-auto pr-2 custom-scrollbar">
               {Object.keys(THEMES).map((key) => {
                 const theme = THEMES[key];
                 const isActive = currentTheme.id === theme.id;
@@ -495,9 +526,9 @@ export default function App() {
       {/* Manual Add Exercise Modal with Video Support */}
       {isAddingExercise && (
         <div className="fixed inset-0 bg-black/90 backdrop-blur-xl z-50 flex items-center justify-center p-6 animate-in zoom-in duration-300">
-          <div className={`${currentTheme.surface} w-full max-w-sm rounded-[2.5rem] border ${currentTheme.border} shadow-2xl flex flex-col`}>
+          <div className={`${currentTheme.surface} w-full max-w-sm rounded-[2.5rem] border ${currentTheme.border} shadow-2xl flex flex-col max-h-[90vh] overflow-y-auto custom-scrollbar`}>
             
-            <div className="p-6 pb-2 text-center border-b border-white/5">
+            <div className="p-6 pb-2 text-center border-b border-white/5 sticky top-0 bg-inherit z-10">
                 <h2 className="text-xl font-black text-white">إضافة تمرين جديد</h2>
                 <p className="text-zinc-500 text-xs mt-1">أضف صورة أو فيديو توضيحي</p>
             </div>
@@ -514,10 +545,10 @@ export default function App() {
                             )}
                             
                             <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <span className="text-xs font-bold text-white">تغيير الملف</span>
+                                <span className="text-xs font-bold text-white flex items-center gap-2"><Edit3 className="w-4 h-4"/> تغيير الملف</span>
                             </div>
                             {previewType === 'video' && (
-                                <div className="absolute top-2 right-2 bg-black/50 p-1 rounded-md">
+                                <div className="absolute top-2 right-2 bg-black/50 p-1.5 rounded-lg backdrop-blur-md">
                                     <Film className="w-4 h-4 text-white" />
                                 </div>
                             )}
@@ -531,7 +562,13 @@ export default function App() {
                             <p className="text-[10px] text-zinc-500">اضغط لرفع ملف</p>
                         </div>
                     )}
-                    <input type="file" className="hidden" accept="image/*,video/*" onChange={handleFileSelect} />
+                    <input 
+                        ref={fileInputRef}
+                        type="file" 
+                        className="hidden" 
+                        accept="image/*,video/*" 
+                        onChange={handleFileSelect} 
+                    />
                     </label>
                 </div>
 
@@ -574,10 +611,12 @@ const MediaViewerFull = ({ mediaId, legacyImage }) => {
     const [type, setType] = useState(legacyImage ? 'image' : null);
 
     useEffect(() => {
-        let objectUrl;
+        let isActive = true;
+        let objectUrl = null;
+
         if (mediaId) {
             getMediaFromDB(mediaId).then((file) => {
-                if (file) {
+                if (isActive && file) {
                     objectUrl = URL.createObjectURL(file);
                     setSrc(objectUrl);
                     setType(file.type.startsWith('video') ? 'video' : 'image');
@@ -585,15 +624,15 @@ const MediaViewerFull = ({ mediaId, legacyImage }) => {
             });
         }
         return () => {
+            isActive = false;
             if (objectUrl) URL.revokeObjectURL(objectUrl);
         };
     }, [mediaId]);
 
-    if (!src) return <div className="text-white">جاري التحميل...</div>;
+    if (!src) return <div className="text-white flex items-center gap-2"><Activity className="animate-spin w-5 h-5"/> جاري التحميل...</div>;
 
     if (type === 'video') {
-        // تم تفعيل التكرار (loop) هنا أيضاً للفيديو عند عرضه بملء الشاشة
-        return <video src={src} controls autoPlay loop className="w-full h-full object-contain" />;
+        return <video src={src} controls autoPlay loop playsInline className="w-full h-full object-contain" />;
     }
     return <img src={src} className="w-full h-full object-contain" alt="Full view" />;
 };
